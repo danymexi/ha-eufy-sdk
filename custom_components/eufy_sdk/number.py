@@ -83,11 +83,21 @@ class EufySdkNumber(EufySdkPropertyEntity, NumberEntity):
         if spec.get("unit"):
             self._attr_native_unit_of_measurement = spec["unit"]
         kind = spec.get("kind")
+        # Prefer the spec's own bounds when it carries them (a write-only setting like a
+        # HomeBase alarm volume declares its real 0..100), else derive from the value's kind.
         low, high = _RANGE_BY_KIND.get(kind, _DEFAULT_RANGE)
+        if isinstance(spec.get("min"), (int, float)):
+            low = spec["min"]
+        if isinstance(spec.get("max"), (int, float)):
+            high = spec["max"]
         self._attr_native_min_value = low
         self._attr_native_max_value = high
         # A percentage (brightness, volume) is a slider; open-ended values a box.
         self._attr_mode = NumberMode.SLIDER if kind in _SLIDER_KINDS else NumberMode.BOX
+        # A write-only setting is accepted but never reported back: show it as assumed
+        # state so the frontend marks the value as the last one written, not a read-back.
+        if spec.get("writeOnly"):
+            self._attr_assumed_state = True
 
     @property
     def native_value(self) -> float | None:
