@@ -63,6 +63,21 @@ class EufySdkApiClient:
         """Whether the WebSocket is open."""
         return self._ws is not None and not self._ws.closed
 
+    async def reset_connection(self) -> None:
+        """Drop a wedged socket so it reconnects fresh (unlike close(), keeps reconnecting).
+
+        A request that times out doesn't close the WebSocket — `connected` stays True and the
+        next attempt hangs on the same dead socket. Closing it here makes `connected` report
+        the drop and lets the receive loop's reconnect supervisor reopen it.
+        """
+        ws = self._ws
+        self._ws = None
+        if ws is not None:
+            try:
+                await ws.close()
+            except Exception:  # noqa: BLE001 — best-effort teardown
+                pass
+
     async def connect(self) -> None:
         """Open the WebSocket + receive loop (serialized against reconnect)."""
         self._closing = False
