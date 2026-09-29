@@ -10,7 +10,8 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.const import EntityCategory
-from homeassistant.core import callback
+from homeassistant.core import CALLBACK_TYPE, callback
+from homeassistant.helpers.event import async_track_point_in_time
 from homeassistant.util import dt as dt_util
 
 from .bespoke import BITFIELD_SWITCHES
@@ -25,7 +26,12 @@ from .entity import (
     solix_devices_with,
 )
 from .light import LIGHT_HIDDEN_PROPS
-from .schedule_logic import current_mode_for, mode_label
+from .schedule_logic import (
+    MODE_SCHEDULE,
+    current_mode_for,
+    mode_label,
+    next_schedule_boundary,
+)
 
 if TYPE_CHECKING:
     from homeassistant.core import Event, HomeAssistant
@@ -521,6 +527,8 @@ class EufySdkCurrentModeSensor(EufySdkDeviceEntity, SensorEntity):
     Reads like the Arming Mode select, but resolves `schedule` to the slot in force
     (from the hub's MODE_SWITCH push, else the timetable) — the old integration's
     `current_mode`. The set mode and the answer's source ride along as attributes.
+    The timetable is resolved in HA's configured time zone, which has to match the
+    station's own local time (see schedule_logic).
     """
 
     _attr_translation_key = "current_mode"
@@ -530,6 +538,53 @@ class EufySdkCurrentModeSensor(EufySdkDeviceEntity, SensorEntity):
         """Bind to an arming-capable station."""
         super().__init__(coordinator, sn)
         self._attr_unique_id = f"{sn}_current_mode"
+        self._boundary_unsub: CALLBACK_TYPE | None = None
+
+    async def async_added_to_hass(self) -> None:
+        """Start following the timetable's slot boundaries."""
+        await super().async_added_to_hass()
+        self._arm_boundary()
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Stop the pending boundary timer."""
+        self._cancel_boundary()
+        await super().async_will_remove_from_hass()
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Re-arm the boundary timer against the fresh state, then write."""
+        self._arm_boundary()
+        super()._handle_coordinator_update()
+
+    def _cancel_boundary(self) -> None:
+        if self._boundary_unsub is not None:
+            self._boundary_unsub()
+            self._boundary_unsub = None
+
+    @callback
+    def _arm_boundary(self) -> None:
+        """
+        Wake at the next slot start or end while the station is on Schedule.
+
+        The resolved mode depends on the clock, and a slot can turn over with no
+        push and no poll for up to a full poll interval, so re-evaluate there.
+        """
+        self._cancel_boundary()
+        state = self.device.get("state", {})
+        if state.get("armingMode") not in (MODE_SCHEDULE, str(MODE_SCHEDULE)):
+            return
+        at = next_schedule_boundary(state.get("jsonSchedule"), dt_util.now())
+        if at is not None:
+            self._boundary_unsub = async_track_point_in_time(
+                self.hass, self._on_boundary, at
+            )
+
+    @callback
+    def _on_boundary(self, _now: Any) -> None:
+        """Write the mode the new slot brings, then wait for the next boundary."""
+        self._boundary_unsub = None
+        self.async_write_ha_state()
+        self._arm_boundary()
 
     @property
     def native_value(self) -> str | None:

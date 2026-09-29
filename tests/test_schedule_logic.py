@@ -97,6 +97,55 @@ class ScheduleLogicTests(unittest.TestCase):
         )
         self.assertEqual(schedule_logic.current_mode_for({}, _THU_2020), (None, "set"))
 
+    def test_geo_stays_unknown_until_the_hub_says(self):
+        self.assertEqual(
+            schedule_logic.current_mode_for({"armingMode": 47}, _THU_2020),
+            (None, "set"),
+        )
+        self.assertEqual(
+            schedule_logic.current_mode_for(
+                {"armingMode": 47, "currentMode": 0}, _THU_2020
+            ),
+            (0, "push"),
+        )
+
+    def test_next_boundary_is_the_next_slot_start_or_end(self):
+        nxt = schedule_logic.next_schedule_boundary
+        self.assertEqual(
+            nxt(_SCHEDULE, _THU_0300),
+            datetime(2026, 9, 24, 7, 0),  # noqa: DTZ001
+        )
+        self.assertEqual(
+            nxt(_SCHEDULE, _THU_2019),
+            datetime(2026, 9, 24, 20, 20),  # noqa: DTZ001
+        )
+        # Exactly on a boundary, the next one is the following boundary.
+        self.assertEqual(
+            nxt(_SCHEDULE, _THU_2020),
+            datetime(2026, 9, 25, 0, 0),  # noqa: DTZ001 - 23:59 runs to midnight
+        )
+
+    def test_next_boundary_crosses_days_and_needs_slots(self):
+        sunday_only = {
+            "schedules": [
+                {
+                    "week": 0,
+                    "start_h": 9,
+                    "start_m": 30,
+                    "end_h": 18,
+                    "end_m": 0,
+                    "mode_id": 1,
+                }
+            ]
+        }
+        # Thursday → next Sunday 09:30.
+        self.assertEqual(
+            schedule_logic.next_schedule_boundary(sunday_only, _THU_2020),
+            datetime(2026, 9, 27, 9, 30),  # noqa: DTZ001
+        )
+        for bad in (None, {}, {"schedules": "x"}, {"schedules": [{"week": 4}]}):
+            self.assertIsNone(schedule_logic.next_schedule_boundary(bad, _THU_2020))
+
     def test_labels_match_the_sdk_enum(self):
         self.assertEqual(schedule_logic.mode_label(3), "custom1")
         self.assertEqual(schedule_logic.mode_label("63"), "disarmed")

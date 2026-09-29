@@ -17,14 +17,20 @@ Two sources, in order of trust:
    mode is `schedule` and no push has been seen yet (startup), the current slot resolves
    it locally. Weekdays follow the hub's own convention, Sunday = 0 (the legacy client
    builds its schedule bitmask the same way: SUNDAY = 1 << 0).
+
+`geo` has no local answer: presence is the hub's to judge, so until a push says which
+mode it chose the result is unknown, never `geo` itself (a rule, not a mode).
+
+Time zone: the timetable is in the HomeBase's local time, and it is resolved here
+against the `at` the caller passes, which the sensor takes from Home Assistant's
+configured time zone (`dt_util.now()`). The two agree when HA's time zone matches the
+hub's; if they differ (HA left on UTC, say) every slot resolves shifted by the offset.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from datetime import datetime
+from datetime import datetime, timedelta
+from typing import Any
 
 
 def _as_int(raw: Any) -> int | None:
@@ -76,6 +82,14 @@ def _eufy_weekday(at: datetime) -> int:
     return (at.weekday() + 1) % 7
 
 
+def _slots(schedule: Any) -> list[Any]:
+    """Return the timetable's slots (`jsonSchedule.schedules`); [] if malformed."""
+    if not isinstance(schedule, dict):
+        return []
+    slots = schedule.get("schedules")
+    return slots if isinstance(slots, list) else []
+
+
 def resolve_schedule(schedule: Any, at: datetime) -> int | None:
     """
     Return the `mode_id` the timetable prescribes at `at`, or None if no slot covers it.
@@ -85,10 +99,8 @@ def resolve_schedule(schedule: Any, at: datetime) -> int | None:
     already in the later one (watched live on a T8030) — except that a day's last slot
     is written as ending 23:59 and has to cover that minute too.
     """
-    if not isinstance(schedule, dict):
-        return None
-    slots = schedule.get("schedules")
-    if not isinstance(slots, list):
+    slots = _slots(schedule)
+    if not slots:
         return None
     weekday = _eufy_weekday(at)
     minute = at.hour * 60 + at.minute
@@ -114,7 +126,8 @@ def current_mode_for(state: dict[str, Any], at: datetime) -> tuple[int | None, s
     Return the mode the hub is enforcing, and where that answer came from.
 
     A `currentMode` the hub pushed wins. Otherwise a `schedule` set mode resolves
-    through the timetable, and any other set mode IS the current mode.
+    through the timetable, `geo` stays unknown (only the hub can say what presence
+    chose), and any other set mode IS the current mode.
     """
     pushed = _as_int(state.get("currentMode"))
     if pushed is not None:
@@ -122,4 +135,39 @@ def current_mode_for(state: dict[str, Any], at: datetime) -> tuple[int | None, s
     set_mode = _as_int(state.get("armingMode"))
     if set_mode == MODE_SCHEDULE:
         return resolve_schedule(state.get("jsonSchedule"), at), SOURCE_SCHEDULE
+    if set_mode == MODE_GEO:
+        return None, SOURCE_SET
     return set_mode, SOURCE_SET
+
+
+def next_schedule_boundary(schedule: Any, at: datetime) -> datetime | None:
+    """
+    Return the next moment after `at` where a timetable slot starts or ends.
+
+    That is when the resolved mode can change without the hub pushing anything, so
+    the sensor re-evaluates there instead of waiting for the next poll. Looks up to a
+    week ahead; None when the timetable has no usable slot.
+    """
+    slots = _slots(schedule)
+    if not slots:
+        return None
+    day_start = at.replace(hour=0, minute=0, second=0, microsecond=0)
+    for offset in range(8):
+        day = day_start + timedelta(days=offset)
+        weekday = _eufy_weekday(day)
+        marks: set[int] = set()
+        for slot in slots:
+            if not isinstance(slot, dict) or _as_int(slot.get("week")) != weekday:
+                continue
+            start = _as_int(slot.get("start_h"))
+            end = _as_int(slot.get("end_h"))
+            if start is None or end is None:
+                continue
+            marks.add(start * 60 + (_as_int(slot.get("start_m")) or 0))
+            end_min = end * 60 + (_as_int(slot.get("end_m")) or 0)
+            marks.add(_END_OF_DAY if end_min == _END_OF_DAY - 1 else end_min)
+        for minute in sorted(marks):
+            moment = day + timedelta(minutes=minute)
+            if moment > at:
+                return moment
+    return None
