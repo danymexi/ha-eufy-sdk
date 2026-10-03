@@ -526,25 +526,17 @@ class EufySdkPropertySensor(EufySdkPropertyEntity, SensorEntity):
         return v if isinstance(v, (int, float, str)) else None
 
 
-class EufySdkCurrentModeSensor(EufySdkDeviceEntity, SensorEntity):
+class ScheduleBoundaryMixin:
     """
-    The mode a HomeBase is enforcing right now, as the SDK's mode label.
+    Re-write an entity's state at each slot boundary of its station's timetable.
 
-    Reads like the Arming Mode select, but resolves `schedule` to the slot in force
-    (from the station's timetable) — the old integration's
-    `current_mode`. The set mode and the answer's source ride along as attributes.
-    The timetable is resolved in HA's configured time zone, which has to match the
-    station's own local time (see schedule_logic).
+    While the station is on Schedule the enforced mode depends on the clock, and a
+    slot can turn over with no push and no poll for up to a full poll interval, so
+    the entity wakes at the next slot start or end and writes again there. For a
+    device entity bound to an arming-capable station.
     """
 
-    _attr_translation_key = "current_mode"
-    _attr_icon = "mdi:shield-sync"
-
-    def __init__(self, coordinator: EufySdkDataUpdateCoordinator, sn: str) -> None:
-        """Bind to an arming-capable station."""
-        super().__init__(coordinator, sn)
-        self._attr_unique_id = f"{sn}_current_mode"
-        self._boundary_unsub: CALLBACK_TYPE | None = None
+    _boundary_unsub: CALLBACK_TYPE | None = None
 
     async def async_added_to_hass(self) -> None:
         """Start following the timetable's slot boundaries."""
@@ -569,12 +561,7 @@ class EufySdkCurrentModeSensor(EufySdkDeviceEntity, SensorEntity):
 
     @callback
     def _arm_boundary(self) -> None:
-        """
-        Wake at the next slot start or end while the station is on Schedule.
-
-        The resolved mode depends on the clock, and a slot can turn over with no
-        push and no poll for up to a full poll interval, so re-evaluate there.
-        """
+        """Wake at the next slot start or end while the station is on Schedule."""
         self._cancel_boundary()
         state = self.device.get("state", {})
         if state.get("armingMode") not in (MODE_SCHEDULE, str(MODE_SCHEDULE)):
@@ -587,10 +574,33 @@ class EufySdkCurrentModeSensor(EufySdkDeviceEntity, SensorEntity):
 
     @callback
     def _on_boundary(self, _now: Any) -> None:
-        """Write the mode the new slot brings, then wait for the next boundary."""
+        """Write the state the new slot brings, then wait for the next boundary."""
         self._boundary_unsub = None
         self.async_write_ha_state()
         self._arm_boundary()
+
+
+class EufySdkCurrentModeSensor(
+    ScheduleBoundaryMixin, EufySdkDeviceEntity, SensorEntity
+):
+    """
+    The mode a HomeBase is enforcing right now, as the SDK's mode label.
+
+    Reads like the Arming Mode select, but resolves `schedule` to the slot in force
+    (from the station's timetable) — the old integration's
+    `current_mode`. The set mode and the answer's source ride along as attributes.
+    The timetable is resolved in HA's configured time zone, which has to match the
+    station's own local time (see schedule_logic).
+    """
+
+    _attr_translation_key = "current_mode"
+    _attr_icon = "mdi:shield-sync"
+
+    def __init__(self, coordinator: EufySdkDataUpdateCoordinator, sn: str) -> None:
+        """Bind to an arming-capable station."""
+        super().__init__(coordinator, sn)
+        self._attr_unique_id = f"{sn}_current_mode"
+        self._boundary_unsub = None
 
     @property
     def native_value(self) -> str | None:

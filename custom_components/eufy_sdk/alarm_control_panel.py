@@ -9,6 +9,7 @@ from homeassistant.components.alarm_control_panel import (
     AlarmControlPanelEntityFeature,
     AlarmControlPanelState,
 )
+from homeassistant.util import dt as dt_util
 
 from .alarm_logic import (
     MODE_AWAY,
@@ -20,6 +21,8 @@ from .alarm_logic import (
     panel_state_for,
 )
 from .entity import EufySdkDeviceEntity, has_capability
+from .schedule_logic import current_mode_for
+from .sensor import ScheduleBoundaryMixin
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -43,8 +46,16 @@ async def async_setup_entry(
     )
 
 
-class EufySdkAlarmControlPanel(EufySdkDeviceEntity, AlarmControlPanelEntity):
-    """Expose verified HomeBase modes through HA's alarm API."""
+class EufySdkAlarmControlPanel(
+    ScheduleBoundaryMixin, EufySdkDeviceEntity, AlarmControlPanelEntity
+):
+    """
+    Expose verified HomeBase modes through HA's alarm API.
+
+    On Schedule the panel shows the mode the timetable enforces right now (the same
+    resolution as the Current mode sensor), re-evaluated at each slot boundary; on
+    Geo, which only the hub can resolve, it stays unknown.
+    """
 
     _attr_code_arm_required = False
     _attr_supported_features = (
@@ -60,6 +71,7 @@ class EufySdkAlarmControlPanel(EufySdkDeviceEntity, AlarmControlPanelEntity):
         super().__init__(coordinator, serial)
         self._attr_unique_id = f"{serial}_alarm_control_panel"
         self._attr_name = "Security mode"
+        self._boundary_unsub = None
 
     @property
     def alarm_state(self) -> AlarmControlPanelState | None:
@@ -71,7 +83,8 @@ class EufySdkAlarmControlPanel(EufySdkDeviceEntity, AlarmControlPanelEntity):
         the hub's own stop push or the auto-clear fallback.
         """
         alarms = self.coordinator.config_entry.runtime_data.station_alarms
-        state = panel_state_for(self.device.get("state", {}), alarms.get(self._sn))
+        mode, _source = current_mode_for(self.device.get("state", {}), dt_util.now())
+        state = panel_state_for({"armingMode": mode}, alarms.get(self._sn))
         return AlarmControlPanelState(state) if state is not None else None
 
     async def _set_mode(self, raw: int) -> None:
