@@ -4,7 +4,8 @@ import unittest
 from datetime import datetime
 from unittest.mock import Mock, patch
 
-from custom_components.eufy_sdk import alarm_control_panel, sensor
+from custom_components.eufy_sdk import alarm_control_panel
+from custom_components.eufy_sdk import entity as entity_module
 
 STATION = "T8030P0000000001"
 # Home (1) from 07:00 to 20:20, Away (0) from 20:20 to the end of the day, every day.
@@ -73,16 +74,31 @@ class PanelScheduleTests(unittest.TestCase):
             )
             self.assertEqual(sounding.alarm_state, "triggered")
 
+    def test_the_panel_tells_a_schedule_slot_from_a_set_mode(self):
+        with _at(12, 0):
+            on_schedule = _panel({"armingMode": 2, "jsonSchedule": _SCHEDULE})
+            self.assertEqual(on_schedule.alarm_state, "armed_home")
+            self.assertEqual(
+                on_schedule.extra_state_attributes,
+                {"arming_mode": "schedule", "mode_id": 1, "source": "schedule"},
+            )
+            set_home = _panel({"armingMode": 1})
+            self.assertEqual(set_home.alarm_state, "armed_home")
+            self.assertEqual(
+                set_home.extra_state_attributes,
+                {"arming_mode": "home", "mode_id": 1, "source": "set"},
+            )
+
     def test_on_schedule_the_panel_wakes_at_the_next_slot_boundary(self):
         entity = _panel({"armingMode": 2, "jsonSchedule": _SCHEDULE})
         with (
             patch.object(
-                sensor.dt_util,
+                entity_module.dt_util,
                 "now",
                 return_value=datetime(2026, 9, 24, 12, 0),  # noqa: DTZ001
             ),
             patch.object(
-                sensor, "async_track_point_in_time", return_value=Mock()
+                entity_module, "async_track_point_in_time", return_value=Mock()
             ) as track,
         ):
             entity._arm_boundary()

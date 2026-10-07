@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.alarm_control_panel import (
     AlarmControlPanelEntity,
@@ -20,9 +20,8 @@ from .alarm_logic import (
     MODE_HOME,
     panel_state_for,
 )
-from .entity import EufySdkDeviceEntity, has_capability
-from .schedule_logic import current_mode_for
-from .sensor import ScheduleBoundaryMixin
+from .entity import EufySdkDeviceEntity, ScheduleBoundaryMixin, has_capability
+from .schedule_logic import current_mode_attributes, current_mode_for
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -86,6 +85,11 @@ class EufySdkAlarmControlPanel(
         mode, _source = current_mode_for(self.device.get("state", {}), dt_util.now())
         state = panel_state_for({"armingMode": mode}, alarms.get(self._sn))
         return AlarmControlPanelState(state) if state is not None else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """The set mode, the enforced mode id and its source, as on Current mode."""
+        return current_mode_attributes(self.device.get("state", {}), dt_util.now())
 
     async def _set_mode(self, raw: int) -> None:
         """Send a raw mode; the bridge event is the canonical state update."""
